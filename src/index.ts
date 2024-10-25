@@ -1,0 +1,1 @@
+export { initFictionChat } from './FictionChat';
