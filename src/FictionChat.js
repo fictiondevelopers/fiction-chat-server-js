@@ -1,13 +1,13 @@
 import WebSocket, {WebSocketServer} from 'ws';
-import { Router } from 'express';
 import pg from 'pg';
 import jwt from 'jsonwebtoken';
 import url from 'url';
+import createTables from './db/createtables';
+import syncUsers from './db/syncusers';
 
 class FictionChat {
     constructor(config) {
         console.log(config);
-        console.log("hello")
         
         this.pool = new pg.Pool({
             connectionString: config.dbUrl,
@@ -17,51 +17,12 @@ class FictionChat {
         this.userTableConfig = config.userTableConfig;
         this.jwtSecret = config.jwtSecret;
         this.setupWebSocket();
-        this.expressRouter = this.setupExpressRouter();
         this.init();
     }
 
     async init() {
-        await this.createTables();
-        await this.syncUsers();
-    }
-
-    async createTables() {
-        const queries = [
-            `CREATE TABLE IF NOT EXISTS fictionchat_User (
-                id SERIAL PRIMARY KEY,
-                real_user_id VARCHAR(255) UNIQUE NOT NULL,
-                fullname VARCHAR(255) NOT NULL,
-                profile_picture TEXT
-            )`,
-            `CREATE TABLE IF NOT EXISTS fictionchat_Conversation (
-                id SERIAL PRIMARY KEY,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )`,
-            `CREATE TABLE IF NOT EXISTS fictionchat_ConversationParticipant (
-                id SERIAL PRIMARY KEY,
-                conversation_id INTEGER REFERENCES fictionchat_Conversation(id),
-                user_id INTEGER REFERENCES fictionchat_User(id)
-            )`,
-            `CREATE TABLE IF NOT EXISTS fictionchat_Message (
-                id SERIAL PRIMARY KEY,
-                sender_id INTEGER REFERENCES fictionchat_User(id),
-                conversation_id INTEGER REFERENCES fictionchat_Conversation(id),
-                content TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )`,
-            `CREATE TABLE IF NOT EXISTS fictionchat_ChatActivity (
-                id SERIAL PRIMARY KEY,
-                user_id INTEGER REFERENCES fictionchat_User(id),
-                conversation_id INTEGER REFERENCES fictionchat_Conversation(id),
-                last_read TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )`
-        ];
-
-        for (const query of queries) {
-            await this.pool.query(query);
-        }
-        console.log("Tables created successfully");
+        await createTables(this.pool);
+        await syncUsers(this.pool, this.userTableConfig);
     }
 
     setupWebSocket() {
@@ -100,101 +61,83 @@ class FictionChat {
         });
     }
 
-    setupExpressRouter() {
-        const router = Router();
-
-        /**
-         * POST /send-message
-         * Expected request body:
-         * {
-         *   toId: number,
-         *   content: string
-         * }
-         * Expected headers:
-         * Authorization: Bearer <token>
-         */
-        router.post('/send-message', async (req, res) => {
-            try {
-                const authHeader = req.headers.authorization;
-                if (!authHeader) {
-                    return res.status(401).json({ error: "No auth token provided" });
-                }
-                const token = authHeader.split(' ')[1];
-                const decodedToken = jwt.verify(token, this.jwtSecret);
-                const senderId = decodedToken[this.userTableConfig.idColumn];
-                const message = await this.sendMessage({ ...req.body, senderId });
-                this.broadcastMessage({...message, toId: req.body.toId});
-                res.status(201).json(message);
-            } catch (error) {
-                res.status(401).json({ error: "Invalid auth token" });
-            }
-        });
-
-        /**
-         * GET /conversations
-         * Expected headers:
-         * Authorization: Bearer <token>
-         */
-        router.get('/conversations', async (req, res) => {
-            try {
-                const authHeader = req.headers.authorization;
-                if (!authHeader) {
-                    return res.status(401).json({ error: "No auth token provided" });
-                }
-                const token = authHeader.split(' ')[1];
-                const decodedToken = jwt.verify(token, this.jwtSecret);
-                const userId = decodedToken[this.userTableConfig.idColumn];
-                const conversations = await this.getConversations(userId);
-                res.status(200).json(conversations);
-            } catch (error) {
-                res.status(401).json({ error: "Invalid auth token" });
-            }
-        });
-
-        /**
-         * GET /messages
-         * Expected query parameters:
-         * conversationId: number
-         * Expected headers:
-         * Authorization: Bearer <token>
-         */
-        router.get('/messages', async (req, res) => {
-            try {
-                const authHeader = req.headers.authorization;
-                if (!authHeader) {
-                    return res.status(401).json({ error: "No auth token provided" });
-                }
-                const token = authHeader.split(' ')[1];
-                jwt.verify(token, this.jwtSecret);
-                const messages = await this.getMessages(req.query.conversationId);
-                res.status(200).json(messages);
-            } catch (error) {
-                res.status(401).json({ error: "Invalid auth token" });
-            }
-        });
-
-        /**
-         * POST /reset-chat
-         * Expected headers:
-         * Authorization: Bearer <token>
-         */
-        router.post('/reset-chat', async (req, res) => {
-            try {
-                const authHeader = req.headers.authorization;
-                if (!authHeader) {
-                    return res.status(401).json({ error: "No auth token provided" });
-                }
-                const token = authHeader.split(' ')[1];
-                jwt.verify(token, this.jwtSecret);
-                await this.resetChat();
-                res.status(200).json({ message: "Chat reset successfully" });
-            } catch (error) {
-                res.status(401).json({ error: "Invalid auth token" });
-            }
-        });
-
-        return router;
+    /**
+     * Handles incoming HTTP requests and routes them to appropriate handler methods
+     * @param {Object} req - Express request object
+     * @param {Object} req.query - Query parameters
+     * @param {string} req.query.method - The method to execute (e.g. 'send-message', 'get-conversations', 'get-messages')
+     * @param {Object} res - Express response object
+     * @returns {Promise<void>} Promise that resolves when the request is handled
+     * @throws {Error} If the method is invalid or authentication fails
+     */
+    async handleRequest(req, res) {
+        // Available methods:
+        // - send-message: Send a new message in a conversation
+        // - get-conversations: Get all conversations for authenticated user
+        // - get-messages: Get messages for a specific conversation
+        const methodName = req.query.method.replace(/-([a-z])/g, g => g[1].toUpperCase());
+        if (typeof this[methodName] === 'function') {
+            return this[`handle${methodName.charAt(0).toUpperCase() + methodName.slice(1)}`](req, res);
+        } else {
+            return res.status(400).json({ 
+                error: "Invalid method",
+                availableMethods: [
+                    'send-message',
+                    'get-conversations', 
+                    'get-messages'
+                ]
+            });
+        }
     }
+
+    handleSendMessage = async (req, res) => {
+        try {
+            const authHeader = req.headers.authorization;
+            if (!authHeader) {
+                return res.status(401).json({ error: "No auth token provided" });
+            }
+            const token = authHeader.split(' ')[1];
+            const decodedToken = jwt.verify(token, this.jwtSecret);
+            const senderId = decodedToken[this.userTableConfig.idColumn];
+            const message = await this.sendMessage({ ...req.body, senderId });
+            this.broadcastMessage({...message, toId: req.body.toId});
+            res.status(201).json(message);
+        } catch (error) {
+            res.status(401).json({ error: "Invalid auth token" });
+        }
+    }
+
+    handleGetConversations = async (req, res) => {
+        try {
+            const authHeader = req.headers.authorization;
+            if (!authHeader) {
+                return res.status(401).json({ error: "No auth token provided" });
+            }
+            const token = authHeader.split(' ')[1];
+            const decodedToken = jwt.verify(token, this.jwtSecret);
+            const userId = decodedToken[this.userTableConfig.idColumn];
+            const conversations = await this.getConversations(userId);
+            res.status(200).json(conversations);
+        } catch (error) {
+            res.status(401).json({ error: "Invalid auth token" });
+        }
+    }
+
+    handleGetMessages = async (req, res) => {
+        try {
+            const authHeader = req.headers.authorization;
+            if (!authHeader) {
+                return res.status(401).json({ error: "No auth token provided" });
+            }
+            const token = authHeader.split(' ')[1];
+            jwt.verify(token, this.jwtSecret);
+            const messages = await this.getMessages(req.query.conversationId);
+            res.status(200).json(messages);
+        } catch (error) {
+            res.status(401).json({ error: "Invalid auth token" });
+        }
+    }
+
 
     broadcastMessage(message) {
         this.wss.clients.forEach((client) => {
@@ -258,8 +201,8 @@ class FictionChat {
     }
 
     async createUser(userData) {
-        const query = 'INSERT INTO fictionchat_User (real_user_id, fullname, profile_picture) VALUES ($1, $2, $3) RETURNING *';
-        const values = [userData.realUserId, userData.fullname, userData.profilePicture];
+        const query = 'INSERT INTO fictionchat_User (id, real_user_id, fullname, profile_picture) VALUES ($1, $2, $3, $4) RETURNING *';
+        const values = [userData.realUserId, userData.realUserId, userData.fullname, userData.profilePicture];
         const result = await this.pool.query(query, values);
         return result.rows[0];
     }
@@ -325,26 +268,7 @@ class FictionChat {
         return result.rows;
     }
 
-    async syncUsers() {
-        const { tableName, idColumn, fullNameColumn, profilePictureColumn } = this.userTableConfig;
-        const query = `
-            SELECT ${idColumn} as id, ${fullNameColumn} as fullname, ${profilePictureColumn} as "profilePicture"
-            FROM "${tableName}"
-        `;
-        const externalUsers = await this.pool.query(query);
-
-        for (const user of externalUsers.rows) {
-            const upsertQuery = `
-                INSERT INTO fictionchat_User (real_user_id, fullname, profile_picture)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (real_user_id) 
-                DO UPDATE SET fullname = $2, profile_picture = $3
-                RETURNING *
-            `;
-            await this.pool.query(upsertQuery, [user.id, user.fullname, user.profilePicture]);
-        }
-        console.log("Users synced successfully");
-    }
+    
 
     async resetChat() {
         const client = await this.pool.connect();
