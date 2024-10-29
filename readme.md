@@ -54,3 +54,10 @@ export default async function handler(req, res) {
 
 
 you can modify the config to fit your database schema, and there is a UI also for this, you can the UI on npm, fiction-chat-client
+
+
+
+
+example implementation of this can be found here: https://github.com/fictiondevelopers/fiction-chat-example
+
+specific path for server code in your backend project's example is here: https://github.com/fictiondevelopers/fiction-chat-example/blob/main/backend/pages/api/chat/route.js
