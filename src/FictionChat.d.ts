@@ -8,6 +8,7 @@ export interface FictionChatConfig {
     profilePictureColumn: string;
   };
   jwtSecret: string;
+  jwtUserIdColumn: string;
 }
 
 export function initFictionChat(config: FictionChatConfig): void;

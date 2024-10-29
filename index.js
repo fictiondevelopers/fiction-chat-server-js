@@ -1,1 +1,1 @@
-export { default } from './src/FictionChat.js';
+export { initFictionChat, FictionChat } from './src/FictionChat';

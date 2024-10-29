@@ -3,8 +3,9 @@ import pg from 'pg';
 import jwt from 'jsonwebtoken';
 import url from 'url';
 
-class FictionChat {
+export class FictionChat {
     constructor(config) {
+        console.log("Entire config")
         console.log(config);
 
         this.pool = new pg.Pool({
@@ -108,7 +109,7 @@ class FictionChat {
 
             try {
                 const decodedToken = jwt.verify(token, this.jwtSecret);
-                const userId = decodedToken[this.userTableConfig.jwtUserIdColumn];
+                const userId = decodedToken[this.jwtUserIdColumn];
 
                 // Remove the previous connection for this user if it exists
                 if (this.activeConnections.has(userId)) {
@@ -161,6 +162,9 @@ class FictionChat {
         // - get-messages: Get messages for a specific conversation
         // - get-available-users-to-chat: Get all users except the authenticated user
         // - create-convo: Create a new conversation with another user
+        if (!req.query.method) {
+            return res.status(200).json({ error: "chat should working fine" });
+        }
         const methodName = req.query.method.replace(/-([a-z])/g, g => g[1].toUpperCase());
         console.log("Method name", methodName)
         if (typeof this[methodName] === 'function') {
@@ -187,7 +191,7 @@ class FictionChat {
             }
             const token = authHeader.split(' ')[1];
             const decodedToken = jwt.verify(token, this.jwtSecret);
-            const fromId = decodedToken[this.userTableConfig.jwtUserIdColumn];
+            const fromId = decodedToken[this.jwtUserIdColumn];
             const { toId } = req.body.params;
 
             // Check if conversation already exists between these users
@@ -243,9 +247,12 @@ class FictionChat {
             }
             const token = authHeader.split(' ')[1];
             const decodedToken = jwt.verify(token, this.jwtSecret);
-            const myId = decodedToken[this.userTableConfig.jwtUserIdColumn];
+            console.log(decodedToken)
+            console.log(this.jwtUserIdColumn)
+
+            const myId = decodedToken[this.jwtUserIdColumn];
             const users = await this.getAvailableUsersToChat(myId);
-            res.status(201).json(users);
+            res.status(200).json(users);
         } catch (error) {
             res.status(401).json({ error: "Invalid auth token" });
         }
@@ -255,6 +262,8 @@ class FictionChat {
         const query = `
             SELECT id, fullname, profile_picture FROM fictionchat_User WHERE id != $1
         `;
+        console.log(query, myId)
+
         const result = await this.pool.query(query, [myId]);
         return result.rows;
     }
@@ -267,7 +276,7 @@ class FictionChat {
             }
             const token = authHeader.split(' ')[1];
             const decodedToken = jwt.verify(token, this.jwtSecret);
-            const senderId = decodedToken[this.userTableConfig.jwtUserIdColumn];
+            const senderId = decodedToken[this.jwtUserIdColumn];
             const message = await this.sendMessage({ ...req.body, senderId });
             // Only broadcast here, not after sending response
             this.broadcastMessage({ ...message, toId: req.body.toId });
@@ -287,7 +296,7 @@ class FictionChat {
             }
             const token = authHeader.split(' ')[1];
             const decodedToken = jwt.verify(token, this.jwtSecret);
-            const userId = decodedToken[this.userTableConfig.jwtUserIdColumn];
+            const userId = decodedToken[this.jwtUserIdColumn];
             const conversations = await this.getConversations(userId);
             res.status(200).json(conversations);
         } catch (error) {
@@ -304,7 +313,7 @@ class FictionChat {
             const token = authHeader.split(' ')[1];
             jwt.verify(token, this.jwtSecret);
             const decodedToken = jwt.verify(token, this.jwtSecret);
-            const userId = decodedToken[this.userTableConfig.jwtUserIdColumn];
+            const userId = decodedToken[this.jwtUserIdColumn];
             const messages = await this.getMessages(req.query.conversationId, userId);
             res.status(200).json(messages);
         } catch (error) {
